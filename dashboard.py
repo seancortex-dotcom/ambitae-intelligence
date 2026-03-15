@@ -2,162 +2,102 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import plotly.express as px
+import os
 
-# 1. Configuración de la página
-st.set_page_config(
-    page_title="Ambitae Intelligence 2026",
-    page_icon="🌿",
-    layout="wide"
-)
+# Configuración de página con título dinámico
+st.set_page_config(page_title="Ambitae Intelligence", layout="wide")
 
-# 2. Estética Profesional (CSS Personalizado)
+# CSS Ajustado para evitar solapamientos y mejorar legibilidad en web
 st.markdown("""
     <style>
-    /* Fondo y tipografía */
-    .stApp { background-color: #fcfcfc; }
-    
-    /* Estilo para métricas */
-    [data-testid="stMetric"] {
-        background-color: #ffffff;
-        padding: 20px;
-        border-radius: 12px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-        border-left: 6px solid #1a454d;
-    }
-    
-    /* Títulos corporativos */
-    h1, h2, h3 { color: #1a454d !important; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
-    
-    /* Botón de enlace en la tabla */
-    .stDataFrame a { color: #2e8b57 !important; text-decoration: none; font-weight: bold; }
-    
-    /* Ajuste de logo */
-    .logo-img { float: left; margin-right: 20px; }
+    [data-testid="stMetricValue"] { font-size: 1.8rem !important; }
+    [data-testid="stMetricLabel"] { font-size: 0.9rem !important; font-weight: bold; }
+    .stDataFrame { border: 1px solid #e6e9ef; border-radius: 10px; }
+    .main-title { color: #1a454d; font-size: 2rem; font-weight: bold; margin-bottom: 0; }
+    /* Evita que los KPIs se peguen en pantallas pequeñas */
+    div[data-testid="stHorizontalBlock"] > div { min-width: 150px !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# 3. Función de carga de datos
+@st.cache_data
 def cargar_datos():
-    if not os.path.exists("contratos_menores.db"):
+    if not os.path.exists('contratos_menores.db'):
         return pd.DataFrame()
-    conn = sqlite3.connect("contratos_menores.db")
+    conn = sqlite3.connect('contratos_menores.db')
     df = pd.read_sql_query("SELECT * FROM licitaciones", conn)
     conn.close()
-    
-    # Limpieza y formatos
     df['importe'] = pd.to_numeric(df['importe'], errors='coerce').fillna(0)
     df['fecha'] = pd.to_datetime(df['fecha'], errors='coerce')
     return df
 
-import os
 df = cargar_datos()
 
-# --- CABECERA INTEGRADA ---
-col_l, col_r = st.columns([1, 4])
-with col_l:
-    # Intenta cargar el logo local
+# Cabecera optimizada
+col_logo, col_tit = st.columns([1, 3])
+with col_logo:
     if os.path.exists("ambitae-logo-completo.png"):
-        st.image("ambitae-logo-completo.png", use_container_width=True)
-    else:
-        st.title("🌿 Ambitae")
-
-with col_r:
-    st.markdown("<h1 style='margin-top: 10px;'>Terminal de Inteligencia Ambiental</h1>", unsafe_allow_html=True)
-    st.markdown("🔍 **Análisis en tiempo real de licitaciones públicas - Año 2026**")
-
-st.markdown("---")
+        st.image("ambitae-logo-completo.png", width=180)
+with col_tit:
+    st.markdown('<p class="main-title">Intelligence Terminal</p>', unsafe_allow_html=True)
+    st.caption("Inteligencia ambiental al servicio de tu ciudad | Datos 2026")
 
 if not df.empty:
-    # --- PANEL IZQUIERDO: FILTROS AVANZADOS ---
-    st.sidebar.header("⚙️ Panel de Control")
+    # Sidebar - Filtros
+    st.sidebar.header("Filtros de Búsqueda")
     
-    # 1. Filtro por Título
-    search = st.sidebar.text_input("Buscar por concepto:", placeholder="Ej: Mantenimiento, Residuos...")
+    # Búsqueda por concepto mejorada
+    search = st.sidebar.text_input("Buscar por concepto:", key="search_input")
     
-    # 2. Filtros Geográficos
-    comunidad_list = ["Todas"] + sorted(df['comunidad'].unique().tolist())
-    com_sel = st.sidebar.selectbox("Comunidad Autónoma:", comunidad_list)
+    comunidad_sel = st.sidebar.selectbox("Comunidad:", ["Todas"] + sorted(df['comunidad'].unique().tolist()))
     
-    provincia_list = ["Todas"] + sorted(df['provincia'].unique().tolist())
-    prov_sel = st.sidebar.selectbox("Provincia:", provincia_list)
-    
-    # 3. FILTRO DE IMPORTE (CORREGIDO Y DINÁMICO)
-    min_val = float(df['importe'].min())
-    max_val = float(df['importe'].max())
-    
-    # Si todos los importes son iguales, ajustamos el rango para evitar error de Streamlit
-    if min_val == max_val:
-        min_val = 0.0
-        
-    rango_imp = st.sidebar.slider(
-        "Rango económico (€):",
-        min_value=min_val,
-        max_value=max_val,
-        value=(min_val, max_val),
-        format="%.0f €"
-    )
+    # Rango de importe dinámico
+    min_imp, max_imp = float(df['importe'].min()), float(df['importe'].max())
+    rango = st.sidebar.slider("Rango Importe (€):", min_imp, max_imp, (min_imp, max_imp))
 
-    # --- APLICACIÓN DE FILTROS ---
-    mask = (df['importe'] >= rango_imp[0]) & (df['importe'] <= rango_imp[1])
-    
+    # Lógica de filtrado estricta
+    df_f = df.copy()
     if search:
-        mask &= df['titulo'].str.contains(search, case=False, na=False)
-    if com_sel != "Todas":
-        mask &= (df['comunidad'] == com_sel)
-    if prov_sel != "Todas":
-        mask &= (df['provincia'] == prov_sel)
-        
-    df_filtrado = df[mask]
-
-    # --- MÉTRICAS ---
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Licitaciones", f"{len(df_filtrado)}")
-    m2.metric("Inversión Total", f"{df_filtrado['importe'].sum():,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
-    m3.metric("Importe Máximo", f"{df_filtrado['importe'].max():,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
-    m4.metric("Adjudicatarios", f"{df_filtrado['adjudicatario'].nunique()}")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # --- GRÁFICOS ---
-    g1, g2 = st.columns(2)
+        # Filtramos por título o adjudicatario para que la búsqueda sea potente
+        df_f = df_f[df_f['titulo'].str.contains(search, case=False, na=False) | 
+                    df_f['adjudicatario'].str.contains(search, case=False, na=False)]
     
-    with g1:
-        st.subheader("📍 Inversión por Comunidad")
-        fig_com = px.bar(
-            df_filtrado.groupby('comunidad')['importe'].sum().reset_index(),
-            x='comunidad', y='importe',
-            color_discrete_sequence=['#1a454d'],
-            template="plotly_white"
-        )
-        st.plotly_chart(fig_com, use_container_width=True)
+    if comunidad_sel != "Todas":
+        df_f = df_f[df_f['comunidad'] == comunidad_sel]
+        
+    df_f = df_f[(df_f['importe'] >= rango[0]) & (df_f['importe'] <= rango[1])]
 
-    with g2:
-        st.subheader("🏆 Principales Adjudicatarios")
-        top_adj = df_filtrado.groupby('adjudicatario')['importe'].sum().nlargest(10).reset_index()
-        fig_pie = px.pie(
-            top_adj, values='importe', names='adjudicatario',
-            hole=0.4, color_discrete_sequence=px.colors.sequential.Greens_r
-        )
+    # Métricas en columnas con más aire (usamos columns para evitar solape)
+    st.write("---")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Contratos Totales", f"{len(df_f):,}".replace(",", "."))
+    m2.metric("Inversión Analizada", f"{df_f['importe'].sum()/1e6:,.2f} M €".replace(",", "X").replace(".", ",").replace("X", "."))
+    m3.metric("Proveedores Únicos", f"{df_f['adjudicatario'].nunique():,}".replace(",", "."))
+
+    # Gráficos
+    st.write("### Análisis Visual")
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        fig_bar = px.bar(df_f.groupby('comunidad')['importe'].sum().reset_index(), 
+                         x='comunidad', y='importe', title="Distribución Regional",
+                         color_discrete_sequence=['#1a454d'])
+        st.plotly_chart(fig_bar, use_container_width=True)
+    with c2:
+        top_10 = df_f.groupby('adjudicatario')['importe'].sum().nlargest(10).reset_index()
+        fig_pie = px.pie(top_10, values='importe', names='adjudicatario', title="Top 10 Adjudicatarios",
+                         hole=0.3, color_discrete_sequence=px.colors.sequential.Greens_r)
         st.plotly_chart(fig_pie, use_container_width=True)
 
-    # --- TABLA MAESTRA ---
-    st.subheader("📑 Detalle de Contratos (2026)")
+    # Tabla Detallada
+    st.write("### Listado de Licitaciones")
     st.dataframe(
-        df_filtrado,
+        df_f[['fecha', 'titulo', 'importe', 'adjudicatario', 'enlace']],
         column_config={
-            "enlace": st.column_config.LinkColumn("🔗 Perfil Contratante", display_text="Ver Licitación"),
-            "importe": st.column_config.NumberColumn("Importe (€)", format="%.2f €"),
-            "fecha": st.column_config.DateColumn("Fecha"),
-            "titulo": "Concepto",
-            "adjudicatario": "Empresa"
+            "enlace": st.column_config.LinkColumn("Enlace", display_text="Ver Perfil"),
+            "importe": st.column_config.NumberColumn("Euros", format="%.2f €"),
+            "fecha": st.column_config.DateColumn("Fecha")
         },
-        use_container_width=True,
-        hide_index=True
+        hide_index=True,
+        use_container_width=True
     )
-
 else:
-    st.error("❌ No se han detectado datos en 'contratos_menores.db'. Por favor, ejecuta primero el scraper.")
-
-# Pie de página
-st.markdown("---")
-st.caption("Ambitae Intelligence v2.0 | Datos procesados desde Plataforma de Contratación del Estado")
+    st.error("No se han cargado los datos correctamente.")
