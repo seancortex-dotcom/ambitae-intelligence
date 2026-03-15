@@ -1,90 +1,103 @@
-import xml.etree.ElementTree as ET
 import sqlite3
-import glob
+import pandas as pd
 import os
+import xml.etree.ElementTree as ET
+import re
 
-# Diccionario para traducir códigos de región (NUTS) a nombres legibles
-MAPA_REGIONES = {
-    'ES11': 'Galicia', 'ES12': 'Asturias', 'ES13': 'Cantabria', 'ES21': 'País Vasco',
-    'ES22': 'Navarra', 'ES23': 'La Rioja', 'ES24': 'Aragón', 'ES30': 'Madrid',
-    'ES41': 'Castilla y León', 'ES42': 'Castilla-La Mancha', 'ES43': 'Extremadura',
-    'ES51': 'Cataluña', 'ES52': 'C. Valenciana', 'ES53': 'Islas Baleares',
-    'ES61': 'Andalucía', 'ES62': 'Murcia', 'ES63': 'Ceuta', 'ES64': 'Melilla',
-    'ES70': 'Canarias'
-}
+# --- CONFIGURACIÓN CRÍTICA ---
+DB_NAME = "contratos_menores.db"
+MAX_SIZE_MB = 23.8  # Dejamos un margen para que GitHub lo acepte sin problemas
 
-directorio_actual = os.path.dirname(os.path.abspath(__file__))
-ruta_bd = os.path.join(directorio_actual, 'contratos_menores.db')
-conexion = sqlite3.connect(ruta_bd)
-cursor = conexion.cursor()
+def inicializar_db():
+    """Crea la base de datos con la estructura completa requerida."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('DROP TABLE IF EXISTS licitaciones') # Limpiamos para asegurar estructura
+    cursor.execute('''
+        CREATE TABLE licitaciones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            titulo TEXT,
+            importe REAL,
+            adjudicatario TEXT,
+            comunidad TEXT,
+            provincia TEXT,
+            fecha TEXT,
+            enlace TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-# Creamos la tabla con UBICACIÓN y CP
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS licitaciones (
-        id_expediente TEXT PRIMARY KEY,
-        titulo TEXT,
-        importe REAL,
-        adjudicatario TEXT,
-        fecha TEXT,
-        enlace TEXT,
-        comunidad TEXT,
-        cp TEXT,
-        archivo_origen TEXT
-    )
-''')
-conexion.commit()
+def extraer_fecha(nombre):
+    """Extrae la fecha del nombre del archivo para ordenar."""
+    match = re.search(r'(\d{4}-\d{2}-\d{2})', nombre)
+    return match.group(1) if match else "0000-00-00"
 
-archivos_encontrados = glob.glob(os.path.join(directorio_actual, '*.atom'))
-total_guardados = 0
+def ejecutar_scraper():
+    inicializar_db()
+    
+    # 1. Listar y ordenar archivos de 2026 (De más reciente a más antiguo)
+    archivos = [f for f in os.listdir('.') if f.endswith('.atom')]
+    archivos.sort(key=extraer_fecha, reverse=True) 
+    
+    if not archivos:
+        print("No se han encontrado archivos .atom")
+        return
 
-print(f"🚀 Procesando {len(archivos_encontrados)} archivos...")
+    conn = sqlite3.connect(DB_NAME)
+    print(f"🚀 Procesando archivos de 2026 (Priorizando los más recientes)...")
 
-for archivo_atom in archivos_encontrados:
-    nombre_archivo = os.path.basename(archivo_atom)
-    try:
-        tree = ET.parse(archivo_atom)
-        root = tree.getroot()
-        batch_contratos = []
-
-        for entry in root.findall('.//*'):
-            if entry.tag.endswith('entry'):
-                d = {
-                    'id': 'Desconocido', 'titulo': 'Sin título', 'importe': 0.0,
-                    'adj': 'Desconocido', 'fecha': 'Sin fecha', 'link': 'Sin enlace',
-                    'comu': 'Desconocida', 'cp': '00000'
-                }
+    for archivo in archivos:
+        fecha_archivo = extraer_fecha(archivo)
+        registros = []
+        
+        try:
+            tree = ET.parse(archivo)
+            root = tree.getroot()
+            # Namespace universal para buscar etiquetas sin errores
+            for entry in root.findall('{http://www.w3.org/2005/Atom}entry'):
+                titulo = entry.find('{http://www.w3.org/2005/Atom}title').text
                 
-                en_ganador = False
-                for child in entry.iter():
-                    tag = child.tag.split('}')[-1]
-                    
-                    if tag == 'ContractFolderID': d['id'] = child.text
-                    elif tag == 'title' and d['titulo'] == "Sin título": d['titulo'] = child.text
-                    elif tag == 'TaxExclusiveAmount': 
-                        try: d['importe'] = float(child.text)
-                        except: pass
-                    elif tag == 'id' and 'contrataciondelestado' in (child.text or ''): d['link'] = child.text
-                    elif tag == 'AwardDate': d['fecha'] = child.text
-                    elif tag == 'WinningParty': en_ganador = True
-                    elif tag == 'Name' and en_ganador: 
-                        d['adj'] = child.text
-                        en_ganador = False
-                    # --- EXTRACCIÓN DE UBICACIÓN ---
-                    elif tag == 'CountrySubentityCode': # Código de región
-                        code = child.text[:4] if child.text else ''
-                        d['comu'] = MAPA_REGIONES.get(code, "Otras / Servicios Centrales")
-                    elif tag == 'Postcode': d['cp'] = child.text
+                # Importe, Adjudicatario y Ubicación usando búsqueda profunda {*}
+                importe_elem = entry.find('.//{*}TotalAmount')
+                importe = float(importe_elem.text) if importe_elem is not None else 0.0
+                
+                adj_elem = entry.find('.//{*}PartyName/{*}Name')
+                adjudicatario = adj_elem.text if adj_elem is not None else "N/A"
+                
+                comu_elem = entry.find('.//{*}CountrySubentity')
+                comunidad = comu_elem.text if comu_elem is not None else "Desconocida"
+                
+                prov_elem = entry.find('.//{*}CityName')
+                provincia = prov_elem.text if prov_elem is not None else "Ver detalle"
+                
+                link_elem = entry.find('{http://www.w3.org/2005/Atom}link')
+                enlace = link_elem.attrib['href'] if link_elem is not None else ""
 
-                if 0 < d['importe'] < 15000.00:
-                    batch_contratos.append((d['id'], d['titulo'], d['importe'], d['adj'], d['fecha'], d['link'], d['comu'], d['cp'], nombre_archivo))
+                registros.append((titulo, importe, adjudicatario, comunidad, provincia, fecha_archivo, enlace))
 
-        cursor.executemany('INSERT OR IGNORE INTO licitaciones VALUES (?,?,?,?,?,?,?,?,?)', batch_contratos)
-        conexion.commit()
-        total_guardados += len(batch_contratos)
-        print(f"  ✅ {nombre_archivo}: +{len(batch_contratos)} contratos.")
+            # Insertamos los datos de este archivo
+            cursor = conn.cursor()
+            cursor.executemany('''
+                INSERT INTO licitaciones (titulo, importe, adjudicatario, comunidad, provincia, fecha, enlace)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', registros)
+            conn.commit()
+            
+            # --- CONTROL DE TAMAÑO ---
+            conn.execute("VACUUM") # Compacta el archivo para medir el peso REAL en disco
+            peso_actual = os.path.getsize(DB_NAME) / (1024 * 1024)
+            
+            if peso_actual >= MAX_SIZE_MB:
+                print(f"🛑 Límite de seguridad alcanzado: {peso_actual:.2f} MB.")
+                print(f"Se han guardado los contratos más recientes hasta la fecha: {fecha_archivo}")
+                break
+                
+        except Exception as e:
+            print(f"Error en {archivo}: {e}")
 
-    except Exception as e:
-        print(f"  ❌ Error en {nombre_archivo}: {e}")
+    conn.close()
+    print(f"✅ Base de datos finalizada: {os.path.getsize(DB_NAME)/(1024*1024):.2f} MB")
 
-print(f"\n✨ ¡Listo! {total_guardados} contratos con ubicación guardados en la base de datos.")
-conexion.close()
+if __name__ == "__main__":
+    ejecutar_scraper()
